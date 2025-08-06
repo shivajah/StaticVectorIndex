@@ -67,6 +67,16 @@ for outer_id in vector_metadata:
         vector_metadata[outer_id][inner_id].sort()
         outer_to_inner_to_points[outer_id][inner_id] = [t[2] for t in vector_metadata[outer_id][inner_id]]
 
+# After Step 5: Pre-group vectors and store dist + cos to centroid (sorted)
+# Record the number of inner clusters for each outer cluster
+outer_to_num_inner_clusters = {}
+for outer_id in vector_metadata:
+    outer_to_num_inner_clusters[outer_id] = len(vector_metadata[outer_id])
+
+print("\nNumber of inner clusters for each outer cluster:")
+for outer_id in sorted(outer_to_num_inner_clusters):
+    print(f"Outer cluster {outer_id}: {outer_to_num_inner_clusters[outer_id]} inner clusters")
+
 print("Step 6: Search using 2-level KMeans with lower and upper bounds")
 start_time = time.time()
 I = []
