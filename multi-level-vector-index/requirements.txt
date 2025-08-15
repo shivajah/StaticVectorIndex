@@ -1,0 +1,6 @@
+numpy
+faiss-cpu
+h5py
+requests
+matplotlib
+pytest
