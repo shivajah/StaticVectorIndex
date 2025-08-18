@@ -193,3 +193,6 @@ def fast_search_config():
     )
 ```
 
+
+
+#### TBD: Integrate Product Quantization.
