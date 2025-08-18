@@ -4,13 +4,19 @@ import faiss
 import bisect
 from collections import defaultdict
 from .kmeans_builder import KMeansBuilder
+from .hierarchy_metadata import HierarchyMetadata
 
 class MultiLevelIndex:
     def __init__(self, n_lowest_clusters):
+        # Number of clusters at the lowest level of the hierarchy
         self.n_lowest_clusters = n_lowest_clusters
+        # KMeansBuilder instance for hierarchical clustering
         self.kmeans_builder = KMeansBuilder(n_lowest_clusters)
+        # HierarchyMetadata instance for managing metadata
+        self.hierarchy_metadata = HierarchyMetadata(self.kmeans_builder)
+        # Data matrix (set in build_index)
         self.data = None
-        self.vector_metadata = None
+        # Flag indicating if the index has been built
         self.built = False
         
     def build_index(self, data):
@@ -24,224 +30,93 @@ class MultiLevelIndex:
         print("Multi-level index built successfully!")
         
     def build_metadata(self, data, N_CROSS=1):
-        """Build cross-pollination metadata for the given N_CROSS value.
+        """Build hierarchical metadata for the given N_CROSS value.
         
-        This creates the vector_metadata structure that maps:
-        vector_metadata[outer_id][inner_id] = list of (dist, cos_sim, idx) tuples
+        This creates hierarchical metadata structure that supports top-down search
+        through all levels of the hierarchy.
         """
         if not self.built:
             raise ValueError("Index must be built before building metadata")
-            
-        print(f"Building cross-pollination metadata with N_CROSS = {N_CROSS}")
         
-        # Get the lowest level (level 0) and highest level assignments
-        lowest_level_kmeans = self.kmeans_builder.get_level_kmeans(0)
-        highest_level = self.kmeans_builder.num_levels() - 1
+        # Store reference to data for distance calculations
+        self.hierarchy_metadata.get_data_reference(data)
         
-        if highest_level == 0:
-            # Only one level, create a dummy upper level
-            print("Only one level found, creating single-level metadata")
-            vector_metadata = defaultdict(dict)
-            _, data_assignments = lowest_level_kmeans.index.search(data, N_CROSS)
-            
-            for idx, inner_ids in enumerate(data_assignments):
-                for inner_id in inner_ids[:N_CROSS]:
-                    outer_id = 0  # Single outer cluster
-                    centroid = lowest_level_kmeans.centroids[inner_id]
-                    vec = data[idx]
-                    dist = np.linalg.norm(vec - centroid)
-                    cos_sim = np.dot(vec, centroid) / (np.linalg.norm(vec) * np.linalg.norm(centroid) + 1e-8)
-                    vector_metadata[outer_id].setdefault(inner_id, []).append((dist, cos_sim, idx))
-        else:
-            # Multi-level case
-            highest_level_kmeans = self.kmeans_builder.get_level_kmeans(highest_level)
-            
-            # Get mapping from lowest level clusters to highest level clusters
-            lowest_centroids = lowest_level_kmeans.centroids
-            _, inner_to_outer = highest_level_kmeans.index.search(lowest_centroids, 1)
-            
-            # Assign data points to multiple clusters at the lowest level
-            _, data_assignments = lowest_level_kmeans.index.search(data, N_CROSS)
-            
-            # Build the cross-pollination metadata
-            vector_metadata = defaultdict(dict)
-            for idx, inner_ids in enumerate(data_assignments):
-                for inner_id in inner_ids[:N_CROSS]:
-                    outer_id = inner_to_outer[inner_id][0]
-                    centroid = lowest_level_kmeans.centroids[inner_id]
-                    vec = data[idx]
-                    dist = np.linalg.norm(vec - centroid)
-                    cos_sim = np.dot(vec, centroid) / (np.linalg.norm(vec) * np.linalg.norm(centroid) + 1e-8)
-                    vector_metadata[outer_id].setdefault(inner_id, []).append((dist, cos_sim, idx))
-        
-        # Sort each list by Euclidean distance to centroid
-        for outer_id in vector_metadata:
-            for inner_id in vector_metadata[outer_id]:
-                vector_metadata[outer_id][inner_id].sort()
-                
-        self.vector_metadata = vector_metadata
-        return vector_metadata
+        # Use the HierarchyMetadata class to build hierarchical metadata
+        cluster_metadata = self.hierarchy_metadata.build_hierarchical_metadata(data, N_CROSS)
+        return cluster_metadata
     
-    def search_query_cross_pollination(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small"):
-        """Search for k nearest neighbors using cross-pollination algorithm."""
-        if not self.built or self.vector_metadata is None:
+    def search_query_hierarchical(self, query_vector, k, n_probe_per_level=2):
+        """Search for k nearest neighbors using true hierarchical search.
+        
+        This method performs top-down hierarchical search starting from the highest
+        level and traversing down to the lowest level by following parent-child
+        relationships.
+        """
+        if not self.built or not self.hierarchy_metadata.built:
             raise ValueError("Index and metadata must be built before searching")
             
-        # Get the clustering models
-        lowest_level_kmeans = self.kmeans_builder.get_level_kmeans(0)
-        highest_level = self.kmeans_builder.num_levels() - 1
+        return self.hierarchy_metadata.hierarchical_search(query_vector, k, n_probe_per_level)
+    
+    def search_query_cross_pollination_legacy(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small"):
+        """Legacy cross-pollination search (for compatibility).
         
-        if highest_level == 0:
-            # Single level case
-            outer_ids = [0]
-        else:
-            highest_level_kmeans = self.kmeans_builder.get_level_kmeans(highest_level)
-            # Find top outer clusters for the query
-            _, outer_assignments = highest_level_kmeans.index.search(query_vector.reshape(1, -1), 3)
-            outer_ids = outer_assignments[0]
+        This method maintains backward compatibility with the old outer/inner approach
+        but now uses the hierarchical metadata internally.
+        """
+        if not self.built or not self.hierarchy_metadata.built:
+            raise ValueError("Index and metadata must be built before searching")
         
-        d = query_vector.shape[0]
+        # For backward compatibility, convert hierarchical search to cross-pollination format
+        # by searching at multiple levels and combining results
+        num_levels = self.kmeans_builder.num_levels()
         
+        if num_levels == 1:
+            # Single level case - use direct search
+            return self._search_single_level(query_vector, k)
+        
+        # Multi-level case - use hierarchical search with varying probe counts
         if probe_strategy == "nprobe":
-            return self._search_nprobe(query_vector, outer_ids, lowest_level_kmeans, k, d, N_PROBE)
+            n_probe_per_level = max(1, N_PROBE // num_levels)
         else:
-            return self._search_tshirt(query_vector, outer_ids, lowest_level_kmeans, k, d, tshirt_size)
-    
-    def _search_nprobe(self, x, outer_ids, inner_kmeans, k, d, N_PROBE):
-        """Search using nprobe strategy."""
-        best_heap = []
-        tau = float("inf")
-        inner_probed = 0
-        seen_indices = set()
-        outer_idx = 0
-        total_outer = len(outer_ids)
+            # T-shirt sizing
+            size_map = {"small": 1, "medium": 2, "large": 3}
+            n_probe_per_level = size_map.get(tshirt_size, 1)
         
-        while inner_probed < N_PROBE and outer_idx < total_outer:
-            outer_id = outer_ids[outer_idx]
-            outer_idx += 1
-            
-            if outer_id not in self.vector_metadata:
-                continue
-                
-            inner_ids = list(self.vector_metadata[outer_id].keys())
-            if not inner_ids:
-                continue
-                
-            inner_centroids_subset = inner_kmeans.centroids[inner_ids]
-            index_l2 = faiss.IndexFlatL2(d)
-            index_l2.add(inner_centroids_subset)
-            _, inner_ranks_local = index_l2.search(x.reshape(1, -1), N_PROBE)
-            selected_inner_ids = [inner_ids[j] for j in inner_ranks_local[0] if j < len(inner_ids)]
-            
-            for inner_id in selected_inner_ids:
-                idxs_meta = self.vector_metadata[outer_id][inner_id]
-                if not idxs_meta:
-                    continue
-                    
-                centroid = inner_kmeans.centroids[inner_id]
-                d_qc = np.linalg.norm(x - centroid)
-                
-                for dist_ic, cos_theta, idx2 in idxs_meta:
-                    if idx2 in seen_indices:
-                        continue
-                        
-                    # Lower bound pruning
-                    lower_bound = abs(d_qc - dist_ic)
-                    if lower_bound > tau:
-                        continue
-                        
-                    # Estimate distance using law of cosines
-                    est_dist = np.sqrt(max(0.0, d_qc ** 2 + dist_ic ** 2 - 2 * d_qc * dist_ic * cos_theta))
-                    if est_dist > tau:
-                        continue
-                        
-                    # Compute actual distance
-                    actual_dist = np.linalg.norm(x - self.data[idx2])
-                    best_heap.append((actual_dist, idx2))
-                    seen_indices.add(idx2)
-                    
-                    if len(best_heap) > k:
-                        best_heap.sort()
-                        best_heap = best_heap[:k]
-                        tau = best_heap[-1][0]
-                        
-                inner_probed += 1
-                if inner_probed >= N_PROBE:
-                    break
-                    
-        return best_heap
+        return self.hierarchy_metadata.hierarchical_search(query_vector, k, n_probe_per_level)
     
-    def _search_tshirt(self, x, outer_ids, inner_kmeans, k, d, tshirt_size):
-        """Search using t-shirt sizing strategy."""
-        tshirt_settings = {
-            "small": 0.10,
-            "medium": 0.20,
-            "large": 0.30
-        }
+    def _search_single_level(self, query_vector, k):
+        """Search in single-level case."""
+        lowest_level_kmeans = self.kmeans_builder.get_level_kmeans(0)
+        _, assignments = lowest_level_kmeans.index.search(query_vector.reshape(1, -1), k)
         
         best_heap = []
-        tau = float("inf")
-        probed_inner_ids = set()
-        seen_indices = set()
-        pct = tshirt_settings[tshirt_size]
-        n_outer_probe = max(1, int(np.ceil(len(outer_ids) * pct)))
-        outer_ids = outer_ids[:n_outer_probe]
+        for cluster_id in assignments[0]:
+            if cluster_id in self.hierarchy_metadata.cluster_metadata[0]:
+                for dist_to_centroid, cos_sim, vector_idx in self.hierarchy_metadata.cluster_metadata[0][cluster_id]:
+                    actual_dist = np.linalg.norm(query_vector - self.data[vector_idx])
+                    best_heap.append((actual_dist, vector_idx))
         
-        for outer_id in outer_ids:
-            if outer_id not in self.vector_metadata:
-                continue
-                
-            inner_ids = list(self.vector_metadata[outer_id].keys())
-            if not inner_ids:
-                continue
-                
-            n_inner_probe = max(1, int(np.ceil(len(inner_ids) * pct)))
-            inner_ids_to_probe = [iid for iid in inner_ids if iid not in probed_inner_ids][:n_inner_probe]
-            
-            if not inner_ids_to_probe:
-                continue
-                
-            inner_centroids_subset = inner_kmeans.centroids[inner_ids_to_probe]
-            index_l2 = faiss.IndexFlatL2(d)
-            index_l2.add(inner_centroids_subset)
-            _, inner_ranks_local = index_l2.search(x.reshape(1, -1), len(inner_ids_to_probe))
-            selected_inner_ids = [inner_ids_to_probe[j] for j in inner_ranks_local[0] if j < len(inner_ids_to_probe)]
-            
-            for inner_id in selected_inner_ids:
-                probed_inner_ids.add(inner_id)
-                idxs_meta = self.vector_metadata[outer_id][inner_id]
-                if not idxs_meta:
-                    continue
-                    
-                centroid = inner_kmeans.centroids[inner_id]
-                d_qc = np.linalg.norm(x - centroid)
-                
-                for dist_ic, cos_theta, idx2 in idxs_meta:
-                    if idx2 in seen_indices:
-                        continue
-                        
-                    lower_bound = abs(d_qc - dist_ic)
-                    if lower_bound > tau:
-                        continue
-                        
-                    est_dist = np.sqrt(max(0.0, d_qc ** 2 + dist_ic ** 2 - 2 * d_qc * dist_ic * cos_theta))
-                    if est_dist > tau:
-                        continue
-                        
-                    actual_dist = np.linalg.norm(x - self.data[idx2])
-                    best_heap.append((actual_dist, idx2))
-                    seen_indices.add(idx2)
-                    
-                    if len(best_heap) > k:
-                        best_heap.sort()
-                        best_heap = best_heap[:k]
-                        tau = best_heap[-1][0]
-                        
-        return best_heap
+        best_heap.sort()
+        return best_heap[:k]
     
-    def search(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small"):
-        """Main search interface."""
-        return self.search_query_cross_pollination(query_vector, k, N_PROBE, probe_strategy, tshirt_size)
+    def search(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small", use_hierarchical=True):
+        """Main search interface with option to use hierarchical or legacy search.
+        
+        Args:
+            query_vector: Query vector
+            k: Number of results to return
+            N_PROBE: Number of probes (for legacy compatibility)
+            probe_strategy: Strategy for probing (for legacy compatibility)
+            tshirt_size: T-shirt sizing strategy (for legacy compatibility)
+            use_hierarchical: If True, use true hierarchical search; if False, use legacy approach
+        """
+        if use_hierarchical:
+            # Use new hierarchical search
+            n_probe_per_level = max(1, N_PROBE) if probe_strategy == "nprobe" else {"small": 1, "medium": 2, "large": 3}.get(tshirt_size, 1)
+            return self.search_query_hierarchical(query_vector, k, n_probe_per_level)
+        else:
+            # Use legacy cross-pollination approach for compatibility
+            return self.search_query_cross_pollination_legacy(query_vector, k, N_PROBE, probe_strategy, tshirt_size)
     
     def get_level_info(self):
         """Get information about each level in the hierarchy."""
@@ -253,6 +128,43 @@ class MultiLevelIndex:
             kmeans = self.kmeans_builder.get_level_kmeans(i)
             info.append(f"Level {i}: {kmeans.centroids.shape[0]} clusters")
         return "\n".join(info)
+    
+    def get_metadata_info(self):
+        """Get information about the metadata structure."""
+        return self.hierarchy_metadata.get_metadata_stats()
+    
+    def trace_vector_hierarchy(self, vector_idx):
+        """Trace a vector through the complete hierarchy.
+        
+        Args:
+            vector_idx: Index of vector in original dataset
+            
+        Returns:
+            dict: Information about the vector's path through hierarchy
+        """
+        if not self.built:
+            raise ValueError("Index must be built first")
+        
+        # Find which lowest-level cluster this vector belongs to
+        lowest_level_kmeans = self.kmeans_builder.get_level_kmeans(0)
+        vector = self.data[vector_idx].reshape(1, -1)
+        _, assignments = lowest_level_kmeans.index.search(vector, 1)
+        lowest_cluster = assignments[0][0]
+        
+        # Trace path through hierarchy
+        if self.hierarchy_metadata.child_to_parent is not None:
+            path = self.hierarchy_metadata.trace_path_to_highest(lowest_cluster)
+            return {
+                'vector_idx': vector_idx,
+                'hierarchy_path': path,
+                'level_clusters': {f"Level {i}": path[i] for i in range(len(path))}
+            }
+        else:
+            return {
+                'vector_idx': vector_idx,
+                'hierarchy_path': [lowest_cluster],
+                'level_clusters': {'Level 0': lowest_cluster}
+            }
     
     def __repr__(self):
         if not self.built:

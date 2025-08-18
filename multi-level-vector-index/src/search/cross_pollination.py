@@ -20,12 +20,12 @@ def evaluate_cross_pollination(
         print(f"Evaluating N_CROSS = {N_CROSS}")
         
         # Build metadata for this N_CROSS value
-        vector_metadata = multi_level_index.build_metadata(xb, N_CROSS)
+        multi_level_index.build_metadata(xb, N_CROSS)
         
         # Perform search across all queries
         I, D, recall, qps = search_all_queries_cross_pollination(
             xq, multi_level_index, xb, k, d, gt,
-            N_PROBE=N_PROBE, probe_strategy=probe_strategy, tshirt_size=tshirt_size
+            N_PROBE=N_PROBE, probe_strategy=probe_strategy, tshirt_size=tshirt_size, use_hierarchical=True
         )
         
         recalls.append(recall)
@@ -36,16 +36,17 @@ def evaluate_cross_pollination(
 
 def search_all_queries_cross_pollination(
     xq, multi_level_index, xb, k, d, gt,
-    N_PROBE=1, probe_strategy="nprobe", tshirt_size="small"
+    N_PROBE=1, probe_strategy="nprobe", tshirt_size="small", use_hierarchical=True
 ):
-    """Search all queries using the multi-level index with cross-pollination."""
+    """Search all queries using the multi-level index with hierarchical or legacy cross-pollination."""
     I = []
     D = []
     start_time = time.time()
     
     for x in xq:
         best_heap = multi_level_index.search(
-            x, k, N_PROBE=N_PROBE, probe_strategy=probe_strategy, tshirt_size=tshirt_size
+            x, k, N_PROBE=N_PROBE, probe_strategy=probe_strategy, 
+            tshirt_size=tshirt_size, use_hierarchical=use_hierarchical
         )
         
         if best_heap:
@@ -81,7 +82,8 @@ def run_cross_pollination_experiment(
     N_PROBE=2,
     min_cross=1,
     max_cross=6,
-    tshirt_size="small"
+    tshirt_size="small",
+    use_hierarchical=True
 ):
     """Run the complete cross-pollination experiment."""
     # Load data
@@ -101,7 +103,8 @@ def run_cross_pollination_experiment(
     print(multi_level_index.get_level_info())
 
     # Evaluate cross-pollination
-    print(f"\nEvaluating cross-pollination with probe_strategy='{probe_strategy}'")
+    search_type = "hierarchical" if use_hierarchical else "legacy"
+    print(f"\nEvaluating {search_type} search with probe_strategy='{probe_strategy}'")
     cross_range, recalls, qps_list = evaluate_cross_pollination(
         xb, xq, gt, multi_level_index, k, d,
         N_PROBE=N_PROBE, min_cross=min_cross, max_cross=max_cross, 

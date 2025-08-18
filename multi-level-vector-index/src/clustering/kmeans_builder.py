@@ -4,6 +4,10 @@ import numpy as np
 
 class KMeansBuilder:
     def __init__(self, n_lowest_clusters):
+        """ 
+        levels : list that stores the actual KMeans objects for each level of the hierarchy 
+        level_assignments: list that stores the assignments of data points to clusters at each level
+        """
         self.n_lowest_clusters = n_lowest_clusters
         self.levels = []
         self.level_assignments = []  # Store assignments for each level
@@ -12,8 +16,19 @@ class KMeansBuilder:
         """Build a single K-means model."""
         d = data.shape[1]
         # Sample data if too large for training
+        # Randomly sample up to 50,000 points from the input data for training.
+        # If dataset is smaller than 50,000, use the entire dataset.
         train_sample = data[np.random.choice(len(data), size=min(50000, len(data)), replace=False)]
+        
+        # Initialize a FAISS KMeans object.
+        # d: dimensionality of the data
+        # n_clusters: number of clusters to form
+        # niter: number of iterations for the k-means algorithm
+        # verbose: print progress during training
+        # spherical: use standard k-means (not spherical)
         kmeans = faiss.Kmeans(d, n_clusters, niter=niter, verbose=True, spherical=False)
+        
+        # Train the k-means model on the sampled data.
         kmeans.train(train_sample)
         return kmeans
 
