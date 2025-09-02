@@ -279,7 +279,6 @@ class HierarchyMetadata:
         
         # Now use detailed metadata at the lowest level for final candidate selection with pruning
         best_heap = []
-        num_probed = 0
         seen_indices = set()
         tau = float("inf")  # Current threshold for pruning
         
@@ -316,9 +315,6 @@ class HierarchyMetadata:
                         best_heap.sort()
                         best_heap = best_heap[:k]
                         tau = best_heap[-1][0]  # Update threshold to worst distance in top-k
-                    num_probed += 1
-                    if num_probed >= n_probe_per_level:
-                        break
         # Sort and return top k
         best_heap.sort()
         return best_heap[:k]
