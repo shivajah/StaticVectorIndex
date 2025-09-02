@@ -3,12 +3,9 @@ from collections import defaultdict
 
 class HierarchyMetadata:
     """Manages simplified hierarchical metadata for multi-level vector index.
-    
-    This class uses a memory-efficient approach:
     - Builds hierarchy mappings between levels (child-to-parent and parent-to-children)
-    - Stores detailed vector metadata (dist, cos_sim, idx) only at the lowest level
-    - Uses centroid-based navigation for higher levels to save memory
-    - Supports efficient top-down hierarchical search
+    - Stores detailed record entry (dist, cos_sim, idx) only at the lowest level
+    - Uses centroid-based navigation to support ANN search
     """
     
     def __init__(self, kmeans_builder):
@@ -215,7 +212,7 @@ class HierarchyMetadata:
             # Map back to original cluster IDs
             return [candidate_children[local_id] for local_id in local_assignments[0]]
     
-    def hierarchical_search(self, query_vector, k, n_probe_per_level=2):
+    def hierarchical_search(self, query_vector, k, n_probe_per_level=2, probe_strategy="nprobe"):
         """Perform simplified hierarchical search using centroid-based navigation.
         
         At higher levels: Use centroid distances to find closest clusters
@@ -254,20 +251,21 @@ class HierarchyMetadata:
                         children = self.parent_to_children[target_level + 1][parent_cluster]
                         next_clusters.extend(children)
             
+            n_probe = n_probe_per_level if probe_strategy == "nprobe" else n_probe_per_level * len(current_clusters)
             if not next_clusters:
                 # If no children found, search all clusters at target level
                 target_level_kmeans = self.kmeans_builder.get_level_kmeans(target_level)
-                n_candidates = min(n_probe_per_level * len(current_clusters), target_level_kmeans.centroids.shape[0])
+                n_candidates = min(n_probe, target_level_kmeans.centroids.shape[0])
                 _, assignments = target_level_kmeans.index.search(query_vector.reshape(1, -1), n_candidates)
                 next_clusters = assignments[0].tolist()
             else:
                 # Select the best clusters among children using centroid distances
-                if len(next_clusters) > n_probe_per_level * len(current_clusters):
+                if len(next_clusters) > n_probe:
                     target_level_kmeans = self.kmeans_builder.get_level_kmeans(target_level)
                     candidate_centroids = target_level_kmeans.centroids[next_clusters]
                     distances = np.linalg.norm(candidate_centroids - query_vector, axis=1)
                     sorted_indices = np.argsort(distances)
-                    max_candidates = min(n_probe_per_level * len(current_clusters), len(next_clusters))
+                    max_candidates = min(n_probe, len(next_clusters))
                     selected_indices = sorted_indices[:max_candidates]
                     next_clusters = [next_clusters[i] for i in selected_indices]
             

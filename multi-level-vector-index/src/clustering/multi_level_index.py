@@ -45,78 +45,33 @@ class MultiLevelIndex:
         cluster_metadata = self.hierarchy_metadata.build_hierarchical_metadata(data, N_CROSS)
         return cluster_metadata
     
-    def search_query_hierarchical(self, query_vector, k, n_probe_per_level=2):
-        """Search for k nearest neighbors using true hierarchical search.
-        
-        This method performs top-down hierarchical search starting from the highest
-        level and traversing down to the lowest level by following parent-child
-        relationships.
-        """
-        if not self.built or not self.hierarchy_metadata.built:
-            raise ValueError("Index and metadata must be built before searching")
-            
-        return self.hierarchy_metadata.hierarchical_search(query_vector, k, n_probe_per_level)
-    
-    def search_query_cross_pollination_legacy(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small"):
-        """Legacy cross-pollination search (for compatibility).
-        
-        This method maintains backward compatibility with the old outer/inner approach
-        but now uses the hierarchical metadata internally.
-        """
-        if not self.built or not self.hierarchy_metadata.built:
-            raise ValueError("Index and metadata must be built before searching")
-        
-        # For backward compatibility, convert hierarchical search to cross-pollination format
-        # by searching at multiple levels and combining results
-        num_levels = self.kmeans_builder.num_levels()
-        
-        if num_levels == 1:
-            # Single level case - use direct search
-            return self._search_single_level(query_vector, k)
-        
-        # Multi-level case - use hierarchical search with varying probe counts
-        if probe_strategy == "nprobe":
-            n_probe_per_level = max(1, N_PROBE // num_levels)
-        else:
-            # T-shirt sizing
-            size_map = {"small": 1, "medium": 2, "large": 3}
-            n_probe_per_level = size_map.get(tshirt_size, 1)
-        
-        return self.hierarchy_metadata.hierarchical_search(query_vector, k, n_probe_per_level)
-    
-    def _search_single_level(self, query_vector, k):
-        """Search in single-level case."""
-        lowest_level_kmeans = self.kmeans_builder.get_level_kmeans(0)
-        _, assignments = lowest_level_kmeans.index.search(query_vector.reshape(1, -1), k)
-        
-        best_heap = []
-        for cluster_id in assignments[0]:
-            if cluster_id in self.hierarchy_metadata.cluster_metadata[0]:
-                for dist_to_centroid, cos_sim, vector_idx in self.hierarchy_metadata.cluster_metadata[0][cluster_id]:
-                    actual_dist = np.linalg.norm(query_vector - self.data[vector_idx])
-                    best_heap.append((actual_dist, vector_idx))
-        
-        best_heap.sort()
-        return best_heap[:k]
-    
-    def search(self, query_vector, k, N_PROBE=1, probe_strategy="nprobe", tshirt_size="small", use_hierarchical=True):
-        """Main search interface with option to use hierarchical or legacy search.
+
+    def search(self, query_vector, k, n_probe_per_level=2, probe_strategy="nprobe", tshirt_size="small"):
+        """Search for k nearest neighbors using hierarchical search.
         
         Args:
             query_vector: Query vector
             k: Number of results to return
-            N_PROBE: Number of probes (for legacy compatibility)
-            probe_strategy: Strategy for probing (for legacy compatibility)
-            tshirt_size: T-shirt sizing strategy (for legacy compatibility)
-            use_hierarchical: If True, use true hierarchical search; if False, use legacy approach
+            n_probe_per_level: Number of clusters to probe at each level
+            probe_strategy: Probing strategy (maintained for compatibility)
+            tshirt_size: Size parameter (maintained for compatibility)
         """
-        if use_hierarchical:
-            # Use new hierarchical search
-            n_probe_per_level = max(1, N_PROBE) if probe_strategy == "nprobe" else {"small": 1, "medium": 2, "large": 3}.get(tshirt_size, 1)
-            return self.search_query_hierarchical(query_vector, k, n_probe_per_level)
-        else:
-            # Use legacy cross-pollination approach for compatibility
-            return self.search_query_cross_pollination_legacy(query_vector, k, N_PROBE, probe_strategy, tshirt_size)
+        if not self.built or not self.hierarchy_metadata.built:
+            raise ValueError("Index and metadata must be built before searching")
+        
+        if (probe_strategy != "nprobe" or tshirt_size not in ["small", "medium", "large"]):
+            raise ValueError("Invalid probe_strategy or tshirt_size")
+        
+        if (probe_strategy == 'tshirt'):
+            if tshirt_size == 'small':
+                n_probe_per_level = 1
+            elif tshirt_size == 'medium':
+                n_probe_per_level = 2
+            elif tshirt_size == 'large':
+                n_probe_per_level = 3
+        
+        return self.hierarchy_metadata.hierarchical_search(query_vector, k, n_probe_per_level, probe_strategy)
+    
     
     def get_level_info(self):
         """Get information about each level in the hierarchy."""

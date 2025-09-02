@@ -9,7 +9,7 @@ from experiments.evaluator import plot_evaluation_results
 
 def evaluate_cross_pollination(
     xb, xq, gt, multi_level_index, k, d,
-    N_PROBE=1, min_cross=1, max_cross=5, probe_strategy="nprobe", tshirt_size="small"
+    n_probe_per_level=2, min_cross=1, max_cross=5, probe_strategy="nprobe", tshirt_size="small"
 ):
     """Evaluate cross-pollination performance across different N_CROSS values."""
     recalls = []
@@ -24,8 +24,8 @@ def evaluate_cross_pollination(
         
         # Perform search across all queries
         I, D, recall, qps = search_all_queries_cross_pollination(
-            xq, multi_level_index, xb, k, d, gt,
-            N_PROBE=N_PROBE, probe_strategy=probe_strategy, tshirt_size=tshirt_size, use_hierarchical=True
+            xq, multi_level_index, xb, k, d, gt, n_probe_per_level=n_probe_per_level,
+            probe_strategy=probe_strategy, tshirt_size=tshirt_size
         )
         
         recalls.append(recall)
@@ -35,19 +35,16 @@ def evaluate_cross_pollination(
     return cross_range, recalls, qps_list
 
 def search_all_queries_cross_pollination(
-    xq, multi_level_index, xb, k, d, gt,
-    N_PROBE=1, probe_strategy="nprobe", tshirt_size="small", use_hierarchical=True
+    xq, multi_level_index, xb, k, d, gt, n_probe_per_level=2, probe_strategy="nprobe", tshirt_size="small"
 ):
-    """Search all queries using the multi-level index with hierarchical or legacy cross-pollination."""
+    """Search all queries using the multi-level index with hierarchical search."""
     I = []
     D = []
     start_time = time.time()
     
     for x in xq:
-        best_heap = multi_level_index.search(
-            x, k, N_PROBE=N_PROBE, probe_strategy=probe_strategy, 
-            tshirt_size=tshirt_size, use_hierarchical=use_hierarchical
-        )
+        best_heap = multi_level_index.search(x, k, n_probe_per_level=n_probe_per_level, 
+                                           probe_strategy=probe_strategy, tshirt_size=tshirt_size)
         
         if best_heap:
             best_heap.sort()
@@ -78,12 +75,12 @@ def search_all_queries_cross_pollination(
 def run_cross_pollination_experiment(
     dataset_path,
     n_inner_clusters=400,
-    probe_strategy="nprobe",
-    N_PROBE=2,
+    n_probe=2,
     min_cross=1,
     max_cross=6,
+    probe_strategy="nprobe",
     tshirt_size="small",
-    use_hierarchical=True
+    show_plot=True
 ):
     """Run the complete cross-pollination experiment."""
     # Load data
@@ -103,16 +100,16 @@ def run_cross_pollination_experiment(
     print(multi_level_index.get_level_info())
 
     # Evaluate cross-pollination
-    search_type = "hierarchical" if use_hierarchical else "legacy"
-    print(f"\nEvaluating {search_type} search with probe_strategy='{probe_strategy}'")
+    print(f"\nEvaluating hierarchical search with probe_strategy='{probe_strategy}', tshirt_size='{tshirt_size}'")
     cross_range, recalls, qps_list = evaluate_cross_pollination(
         xb, xq, gt, multi_level_index, k, d,
-        N_PROBE=N_PROBE, min_cross=min_cross, max_cross=max_cross, 
+        n_probe_per_level=n_probe, min_cross=min_cross, max_cross=max_cross,
         probe_strategy=probe_strategy, tshirt_size=tshirt_size
     )
 
     # Plot results
-    print("\nGenerating evaluation plots...")
-    plot_evaluation_results(cross_range, recalls, qps_list)
+    if show_plot:
+        print("\nGenerating evaluation plots...")
+        plot_evaluation_results(cross_range, recalls, qps_list)
     
     return cross_range, recalls, qps_list
